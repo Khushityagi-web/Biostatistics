@@ -1,0 +1,151 @@
+# Hypertension Risk Prediction Using NHANES 2017–2018
+# ---------------------------------------------------
+# This script performs data integration, exploratory analysis, 
+# logistic regression modeling (Models A, B, and C), and evaluation 
+# to predict hypertension risk in U.S. adults.
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import statsmodels.api as sm
+from sklearn.metrics import accuracy_score, roc_auc_score
+
+# -----------------------------
+# Phase 1: Load and Merge Data
+# -----------------------------
+
+# Load NHANES XPT datasets
+demo = pd.read_sas("DEMO_J.XPT")   # Demographics
+bp = pd.read_sas("BPX_J.XPT")      # Blood pressure
+bmx = pd.read_sas("BMX_J.XPT")     # Body measurements
+
+# Merge datasets on participant ID
+merged = demo.merge(bp, on='SEQN', how='inner') \
+             .merge(bmx, on='SEQN', how='inner')
+
+# Define hypertension based on SBP ≥130 or DBP ≥80
+merged['hypertension'] = ((merged['BPXSY1'] >= 130) | (merged['BPXDI1'] >= 80)).astype(int)
+
+# Select relevant columns and drop missing
+columns_needed = ['SEQN', 'RIDAGEYR', 'RIAGENDR', 'RIDRETH1', 'BMXBMI', 'BPXSY1', 'BPXDI1', 'hypertension']
+merged_clean = merged[columns_needed].dropna()
+
+# Print basic data info
+print(merged_clean.head())
+print(merged_clean['hypertension'].value_counts())
+
+# -----------------------------
+# Phase 1: Exploratory Analysis
+# -----------------------------
+
+sns.set(style="whitegrid")
+
+# Age Distribution by Hypertension
+plt.figure(figsize=(8, 5))
+sns.histplot(data=merged_clean, x="RIDAGEYR", hue="hypertension", bins=30, kde=True)
+plt.title("Age Distribution by Hypertension Status")
+plt.xlabel("Age"); plt.ylabel("Count"); plt.show()
+
+# BMI Distribution by Hypertension
+plt.figure(figsize=(8, 5))
+sns.histplot(data=merged_clean, x="BMXBMI", hue="hypertension", bins=30, kde=True)
+plt.title("BMI Distribution by Hypertension Status")
+plt.xlabel("BMI"); plt.ylabel("Count"); plt.show()
+
+# Boxplot: BMI vs Hypertension
+plt.figure(figsize=(6, 5))
+sns.boxplot(x="hypertension", y="BMXBMI", data=merged_clean)
+plt.title("BMI by Hypertension Status")
+plt.xlabel("Hypertension (0 = No, 1 = Yes)"); plt.ylabel("BMI"); plt.show()
+
+# Barplot: Gender vs Hypertension
+merged_clean['Gender'] = merged_clean['RIAGENDR'].replace({1: "Male", 2: "Female"})
+plt.figure(figsize=(6, 5))
+sns.countplot(data=merged_clean, x="Gender", hue="hypertension")
+plt.title("Hypertension Counts by Gender")
+plt.xlabel("Gender"); plt.ylabel("Count"); plt.legend(title="Hypertension"); plt.show()
+
+# Barplot: Race vs Hypertension
+race_map = {
+    1: "Mexican American", 2: "Other Hispanic", 3: "Non-Hispanic White",
+    4: "Non-Hispanic Black", 5: "Other Race"
+}
+merged_clean['Race'] = merged_clean['RIDRETH1'].replace(race_map)
+plt.figure(figsize=(10, 5))
+sns.countplot(data=merged_clean, x="Race", hue="hypertension")
+plt.title("Hypertension Counts by Race/Ethnicity")
+plt.xlabel("Race"); plt.ylabel("Count"); plt.legend(title="Hypertension")
+plt.xticks(rotation=45); plt.show()
+
+# -----------------------------
+# Phase 2: Model A - Age + BMI
+# -----------------------------
+
+df = merged_clean.copy()
+X_a = sm.add_constant(df[['RIDAGEYR', 'BMXBMI']])
+y = df['hypertension']
+model_a = sm.Logit(y, X_a).fit()
+print(model_a.summary())
+
+# Odds Ratios and Evaluation
+print(np.exp(model_a.params))
+pred_prob_a = model_a.predict(X_a)
+pred_class_a = (pred_prob_a >= 0.5).astype(int)
+print("Model A Accuracy:", accuracy_score(y, pred_class_a))
+print("Model A AUC:", roc_auc_score(y, pred_prob_a))
+
+# -----------------------------
+# Phase 2: Model B - Add Gender and Race
+# -----------------------------
+
+df['Gender'] = df['RIAGENDR'].replace({1: "Male", 2: "Female"})
+df['Race'] = df['RIDRETH1'].replace(race_map)
+X_b = pd.get_dummies(df[['RIDAGEYR', 'BMXBMI', 'Gender', 'Race']], drop_first=True)
+X_b = sm.add_constant(X_b).astype(float)
+y = df['hypertension'].astype(int)
+model_b = sm.Logit(y, X_b).fit()
+print(model_b.summary())
+
+# Odds Ratios and Evaluation
+print(np.exp(model_b.params))
+pred_prob_b = model_b.predict(X_b)
+pred_class_b = (pred_prob_b >= 0.5).astype(int)
+print("Model B Accuracy:", accuracy_score(y, pred_class_b))
+print("Model B AUC:", roc_auc_score(y, pred_prob_b))
+
+# -----------------------------
+# Phase 2: Model C - Add Dietary Intake
+# -----------------------------
+
+# Load dietary intake file
+diet = pd.read_sas("DR1TOT_J.XPT")
+
+# Prepare merged dataset with dietary calories
+diet_sub = diet[['SEQN', 'DR1TKCAL']]
+merged_diet = merged_clean.merge(diet_sub, on='SEQN', how='inner').dropna(subset=['DR1TKCAL'])
+
+# Recode Gender and Race
+merged_diet['Gender'] = merged_diet['RIAGENDR'].replace({1: "Male", 2: "Female"})
+merged_diet['Race'] = merged_diet['RIDRETH1'].replace(race_map)
+
+# Create features for Model C
+X_c = pd.get_dummies(
+    merged_diet[['RIDAGEYR', 'BMXBMI', 'DR1TKCAL', 'Gender', 'Race']],
+    drop_first=True
+)
+X_c = sm.add_constant(X_c).astype(float)
+y_c = merged_diet['hypertension'].astype(int)
+
+# Fit and Evaluate Model C
+model_c = sm.Logit(y_c, X_c).fit()
+print(model_c.summary())
+
+print(np.exp(model_c.params))
+pred_prob_c = model_c.predict(X_c)
+pred_class_c = (pred_prob_c >= 0.5).astype(int)
+print("Model C Accuracy:", accuracy_score(y_c, pred_class_c))
+print("Model C AUC:", roc_auc_score(y_c, pred_prob_c))
+
+
+
